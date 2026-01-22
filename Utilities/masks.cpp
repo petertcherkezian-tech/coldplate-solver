@@ -8,25 +8,23 @@
 //   without expensive geometric checks each iteration.
 //
 // MASK COMPUTATION:
-//   For each velocity/pressure location, we check if adjacent cells are solid:
 //   
-//   - isFluidU[i,j]: True if u(i,j) is in fluid region
-//     A u-face is fluid only if BOTH adjacent cells are fluid:
-//     isFluidU = !isSolid(i,j) && !isSolid(i,j+1)
+//   cellType conventions:
+//     cellType = 0       → pure fluid
+//     0 < cellType < 1   → porous (Brinkman penalization, must be solved)
+//     cellType = 1       → true solid wall, impermeable
 //
-//   - isFluidV[i,j]: True if v(i,j) is in fluid region
-//     A v-face is fluid only if BOTH adjacent cells are fluid:
-//     isFluidV = !isSolid(i,j) && !isSolid(i+1,j)
+//   PERMEABILITY is the single criterion: cellType < 1 means permeable.
 //
-//   - isFluidP[i,j]: True if p(i,j) is in fluid region
-//     isFluidP = !isSolid(i,j)
+//   FACE MASKS (isFluidU, isFluidV):
+//     A face is active ONLY if BOTH adjacent cells are permeable.
+//     This enforces no-penetration at solid walls while allowing flow through
+//     porous regions. Brinkman drag handles resistance in porous cells.
 //
-// SOLID THRESHOLD:
-//   Cells are classified as solid if cellType > 0.5
-//   This allows for continuous (density-based) geometry where:
-//   - cellType = 0.0 → pure fluid
-//   - cellType = 1.0 → pure solid
-//   - 0 < cellType < 1 → buffer zone (treated as fluid for mask, but penalized)
+//   PRESSURE MASK (isFluidP):
+//     A cell is active if and only if it is permeable (cellType < 1).
+//     Solid cells have no pressure DOF - wall BCs are handled by the pressure
+//     solver setting coupling coefficients to zero for solid neighbors.
 //
 // STORAGE:
 //   Masks are stored as 1D std::vector<bool> for cache efficiency.
@@ -39,112 +37,87 @@
 // ============================================================================
 // buildFluidMasks: Precompute fluid/solid masks for all grid locations
 // ============================================================================
-// ============================================================================
-// buildFluidMasks: Precompute fluid/solid masks for all grid locations
-// ============================================================================
 void SIMPLE::buildFluidMasks() {
-    const int uRows = M + 1;
-    const int uCols = N;
-    const int vRows = M;
-    const int vCols = N + 1;
-    const int pRows = M + 1;
+    isFluidU.assign((M + 1) * N, false);
+    isFluidV.assign(M * (N + 1), false);
+    isFluidP.assign((M + 1) * (N + 1), false);
+
     const int pCols = N + 1;
+    const int uCols = N;
+    const int vCols = N + 1;
 
-    isFluidU.resize(uRows * uCols, false);
-    isFluidV.resize(vRows * vCols, false);
-    isFluidP.resize(pRows * pCols, false);
-
-    // Helper: Determine if a cell is "computationally solid"
-    // For TopOpt with Brinkman, we only skip if it is nearly 100% solid.
-    // Threshold 0.99 allows Porous/Interface cells to be solved.
-    auto isSolid = [&](int i, int j) -> bool {
-        int ci = i - 1;
-        int cj = j - 1;
+    // -------------------------------------------------------------------------
+    // Helper: Check if a cell (0-based ci, cj) is permeable (fluid or porous)
+    // -------------------------------------------------------------------------
+    auto isPermeable = [&](int ci, int cj) -> bool {
         if (ci < 0 || ci >= M || cj < 0 || cj >= N) return false;
-        
-        // cellType: 0=fluid, 1=solid
-        // Threshold > 0.99 means only "Pure Solid" is skipped.
-        // Gamma 0.1 to 0.99 (Porous) is treated as Fluid (Active).
-        return cellType(ci, cj) > 0.99;
+        return cellType(ci, cj) < 0.99999; // cellType < 1
     };
 
-    // 1. U-Velocity Mask (Vertical Face)
-    for (int i = 0; i < uRows; ++i) {
-        for (int j = 0; j < uCols; ++j) {
-            bool fluid = false;
-
-            // Boundary Check
-            if (i >= 1 && i < M && j >= 1 && j < N - 1) {
-                // Interior Face: Open if LEFT or RIGHT is not pure solid?
-                // Actually, standard staggered grid says a face is blocked if EITHER side is solid.
-                // BUT for Brinkman, we want to solve even if one side is porous.
-                // Logic: A face is "solid" (skipped) only if BOTH sides are pure solid?
-                // Or if either side is pure solid?
-                //
-                // Standard No-Slip: Block if EITHER is solid.
-                // Brinkman: Block only if BOTH is solid? 
-                // Let's stick to consistent logic: If a cell is "Active" (<=0.99), we solve u on its face.
-                
-                // If Face separates two Pure Solids -> Skip.
-                // If Face touches at least one Active Cell -> Solve?
-                // 
-                // Let's use standard logic with the high threshold:
-                // Block if Left is Solid OR Right is Solid.
-                // Since "Solid" means >0.99, a porous cell (0.5) is NOT solid.
-                // So flow can enter a porous cell.
-                bool leftSolid = isSolid(i, j);
-                bool rightSolid = isSolid(i, j + 1);
-                
-                if (!leftSolid && !rightSolid) {
-                    fluid = true;
-                }
-            }
-            // Inlet/Outlet Exception
-            else if (i >= 1 && i < M) {
-                 if (j == 0 && !isSolid(i, 1)) fluid = true;       // Inlet
-                 if (j == N - 1 && !isSolid(i, N)) fluid = true;   // Outlet
-            }
-            isFluidU[i * uCols + j] = fluid;
+    // -------------------------------------------------------------------------
+    // Step 1: Build PRESSURE mask (simplest: permeable cells only)
+    // -------------------------------------------------------------------------
+    int solidCount = 0;
+    for (int i = 1; i <= M; ++i) {
+        for (int j = 1; j <= N; ++j) {
+            int ci = i - 1;
+            int cj = j - 1;
+            bool permeable = isPermeable(ci, cj);
+            isFluidP[i * pCols + j] = permeable;
+            if (!permeable) solidCount++;
         }
     }
 
-    // 2. V-Velocity Mask (Horizontal Face)
-    for (int i = 0; i < vRows; ++i) {
-        for (int j = 0; j < vCols; ++j) {
-             bool fluid = false;
-             if (i >= 1 && i < M - 1 && j >= 1 && j < N) {
-                 bool topSolid = isSolid(i, j);
-                 bool botSolid = isSolid(i + 1, j);
-                 
-                 // Open if neither is pure solid
-                 if (!topSolid && !botSolid) {
-                     fluid = true;
-                 }
-             }
-             isFluidV[i * vCols + j] = fluid;
-        }
-    }
+    // -------------------------------------------------------------------------
+    // Step 2: Build FACE masks (based on permeability of adjacent cells)
+    // -------------------------------------------------------------------------
+    // A face is active only if BOTH adjacent cells are permeable.
+    // This enforces no-penetration at solid walls.
+    // -------------------------------------------------------------------------
 
-    // 3. Pressure Mask (Cell Center)
-    for (int i = 0; i < pRows; ++i) {
-        for (int j = 0; j < pCols; ++j) {
-            bool fluid = false;
-            if (i >= 1 && i < M && j >= 1 && j < N) {
-                // Active if not pure solid
-                if (!isSolid(i, j)) {
-                    fluid = true; // Solve pressure in porous/fluid zones
-                }
+    // U-faces: vertical faces between cells
+    // u(i,j) with i in [1,M], j in [0,N-1]
+    // For interior faces: u(i,j) sits between cells (i-1, j-1) and (i-1, j) in 0-based
+    for (int i = 1; i <= M; ++i) {
+        for (int j = 0; j < N; ++j) {
+            int ci = i - 1;  // 0-based row
+            
+            if (j == 0) {
+                // Inlet boundary: active if first interior cell is permeable
+                isFluidU[i * uCols + j] = isPermeable(ci, 0);
+            } else {
+                // Interior/outlet: between cells (ci, j-1) and (ci, j)
+                isFluidU[i * uCols + j] = isPermeable(ci, j - 1) && isPermeable(ci, j);
             }
-            isFluidP[i * pCols + j] = fluid;
         }
     }
 
-    int fluidUCount = 0, fluidVCount = 0, fluidPCount = 0;
-    for (bool b : isFluidU) if (b) fluidUCount++;
-    for (bool b : isFluidV) if (b) fluidVCount++;
-    for (bool b : isFluidP) if (b) fluidPCount++;
-    std::cout << "Fluid masks (Thresh 0.99): U=" << fluidUCount << "/" << isFluidU.size()
-              << ", V=" << fluidVCount << "/" << isFluidV.size()
-              << ", P=" << fluidPCount << "/" << isFluidP.size() << std::endl;
+    // V-faces: horizontal faces between cells
+    // v(i,j) with i in [0,M-1], j in [1,N]
+    // For interior faces: v(i,j) sits between cells (i-1, j-1) and (i, j-1) in 0-based
+    for (int i = 0; i < M; ++i) {
+        for (int j = 1; j <= N; ++j) {
+            int cj = j - 1;  // 0-based column
+            
+            if (i == 0) {
+                // Top boundary: no flux through domain wall
+                isFluidV[i * vCols + j] = false;
+            } else {
+                // Interior: between cells (i-1, cj) and (i, cj)
+                isFluidV[i * vCols + j] = isPermeable(i - 1, cj) && isPermeable(i, cj);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Statistics
+    // -------------------------------------------------------------------------
+    int uC = 0, vC = 0, pC = 0;
+    for (auto b : isFluidU) uC += b;
+    for (auto b : isFluidV) vC += b;
+    for (auto b : isFluidP) pC += b;
+
+    std::cout << "Masks: U=" << uC << " V=" << vC << " P=" << pC 
+              << " | Solid cells: " << solidCount << std::endl;
 }
 
