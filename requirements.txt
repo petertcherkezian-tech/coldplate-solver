@@ -1,7 +1,0 @@
-numpy
-scipy
-matplotlib
-pypardiso
-pyamg
-pyvista
-vtk
