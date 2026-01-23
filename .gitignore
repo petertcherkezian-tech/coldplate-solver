@@ -1,5 +1,4 @@
 # User specified exclusions
-*.pdf
 __pycache__/
 *.pyc
 derive_interface.py

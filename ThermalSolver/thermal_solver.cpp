@@ -136,7 +136,9 @@
      double Lx = 0, Ly = 0, H_b = 0.0005, H_t = 0.004;
     double k_s = 400.0, k_f = 0.6, rho = 998.0, Cp = 4180.0, T_inlet = 30.0;
     double rtol = 1e-6; int maxiter = 1000;
-    // Density method is ALWAYS enabled - no binary mode
+    // Conductivity interpolation: 0=linear, 1=RAMP (for TO)
+    int k_interp_mode = 0;  // 0=linear (stable), 1=RAMP (paper Eq.13 for TO)
+    double qk = 1.0;  // RAMP penalization parameter (paper uses [1,3,10,30] sequence)
     
     double dx() const { return Lx / Nx; }
      double dy() const { return Ly / Ny; }
@@ -175,21 +177,29 @@
      double harm(double a, double b) const { return 2*a*b/(a+b+1e-30); }
      
      // Region: 0=solid (base or fin), 1=fluid
-     // For density-based TO: use continuous gamma instead of binary threshold
-     int region(int i, int j, int k) const { 
-         if (k < p.nz_solid) return 0;  // Base plate is always solid
-         double g = gamma[j*p.Nx+i];
-         return (g > 0.5) ? 1 : 0;  // Threshold for region classification
-     }
-     
-     // Thermal conductivity with density-based interpolation (always enabled)
-    // Linear interpolation: k = k_s * (1-gamma) + k_f * gamma
-    // k_s when gamma=0 (solid), k_f when gamma=1 (fluid)
-    double kval(int i, int j, int k) const { 
-        if (k < p.nz_solid) return p.k_s;  // Base plate always solid conductivity
+    // Buffer zones (0 < gamma < 1) treated as fluid for advection
+    int region(int i, int j, int k) const { 
+        if (k < p.nz_solid) return 0;  // Base plate is always solid
         double g = gamma[j*p.Nx+i];
-        return p.k_s * (1.0 - g) + p.k_f * g;
+        return (g > 0.01) ? 1 : 0;  // Any gamma > 0 means fluid (includes buffers)
     }
+     
+     // Thermal conductivity with configurable interpolation
+   // Mode 0 (Linear): k = k_s * (1-gamma) + k_f * gamma
+   // Mode 1 (RAMP): k = k_f + (k_s - k_f) * (1-gamma) / (1 + qk*gamma)  [Paper Eq. 13]
+   double kval(int i, int j, int k) const { 
+       if (k < p.nz_solid) return p.k_s;  // Base plate always solid conductivity
+       double g = gamma[j*p.Nx+i];
+       
+       if (p.k_interp_mode == 1) {
+           // RAMP interpolation (Zeng & Lee paper, Eq. 13)
+           // For optimization: penalizes intermediate gamma toward extremes
+           return p.k_f + (p.k_s - p.k_f) * (1.0 - g) / (1.0 + p.qk * g);
+       } else {
+           // Linear interpolation (default, current best for buffer zones)
+           return p.k_s * (1.0 - g) + p.k_f * g;
+       }
+   }
     double pois(int k) const {
         if (k < p.nz_solid) return 0;
         double z = (k - p.nz_solid + 0.5) * p.dz_f() / p.H_t;
@@ -201,13 +211,10 @@
          double dx = p.dx(), dy = p.dy(), rhoCp = p.rho * p.Cp, T_in = p.T_inlet;
          double Az = dx * dy;
          
-         // Initial T
-        T.assign(n, T_in);
-
         // Initial T
         T.assign(n, T_in);
 
-        // --- SINGLE-PASS MULTICORE SOLVER (V3 Pure Architecture + IDR(s)) ---
+       // --- SINGLE-PASS MULTICORE SOLVER (V3 Pure Architecture + IDR(s)) ---
         cout << "  Assembling matrix (Multicore)..." << flush;
         auto t0 = chrono::high_resolution_clock::now();
         
