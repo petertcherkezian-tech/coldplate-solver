@@ -97,7 +97,42 @@ void SIMPLE::saveAll()
     saveMatrix(p, "pressure_full");
     
     // ---------------------------------------------------------
-    // 3. EXPORT THERMAL DATA (CROPPED)
+    // 3. CALCULATE PRESSURE GRADIENT (FULL DOMAIN)
+    // ---------------------------------------------------------
+    Eigen::MatrixXd pGradX = Eigen::MatrixXd::Zero(M, N);  // dp/dx
+    Eigen::MatrixXd pGradY = Eigen::MatrixXd::Zero(M, N);  // dp/dy
+    Eigen::MatrixXd pGradMag = Eigen::MatrixXd::Zero(M, N); // |∇p|
+    
+    for (int i = 0; i < M; ++i) {
+        for (int j = 0; j < N; ++j) {
+            // Only compute gradient for permeable cells
+            if (cellType(i, j) < 0.99999) {
+                // dp/dx using central difference where possible
+                if (j > 0 && j < N - 1) {
+                    pGradX(i, j) = (p(i, j + 1) - p(i, j - 1)) / (2.0 * hx);
+                } else if (j == 0) {
+                    pGradX(i, j) = (p(i, j + 1) - p(i, j)) / hx;  // Forward diff
+                } else {
+                    pGradX(i, j) = (p(i, j) - p(i, j - 1)) / hx;  // Backward diff
+                }
+                
+                // dp/dy using central difference where possible
+                if (i > 0 && i < M - 1) {
+                    pGradY(i, j) = (p(i + 1, j) - p(i - 1, j)) / (2.0 * hy);
+                } else if (i == 0) {
+                    pGradY(i, j) = (p(i + 1, j) - p(i, j)) / hy;  // Forward diff
+                } else {
+                    pGradY(i, j) = (p(i, j) - p(i - 1, j)) / hy;  // Backward diff
+                }
+                
+                pGradMag(i, j) = std::sqrt(pGradX(i, j) * pGradX(i, j) + 
+                                           pGradY(i, j) * pGradY(i, j));
+            }
+        }
+    }
+
+    // ---------------------------------------------------------
+    // 4. EXPORT THERMAL DATA (CROPPED)
     // ---------------------------------------------------------
     int N_thermal = N - N_in_buffer - N_out_buffer;
     
@@ -107,6 +142,7 @@ void SIMPLE::saveAll()
         Eigen::MatrixXd uThermal = Eigen::MatrixXd::Zero(M, N_thermal);
         Eigen::MatrixXd vThermal = Eigen::MatrixXd::Zero(M, N_thermal);
         Eigen::MatrixXd pThermal = Eigen::MatrixXd::Zero(M, N_thermal);
+        Eigen::MatrixXd pGradThermal = Eigen::MatrixXd::Zero(M, N_thermal);
         
         // Slice the matrix: Skip 'N_in_buffer' columns
         for (int i = 0; i < M; ++i) {
@@ -114,19 +150,18 @@ void SIMPLE::saveAll()
                 int src_j = j + N_in_buffer;
                 uThermal(i, j) = uCenter(i, src_j);
                 vThermal(i, j) = vCenter(i, src_j);
-                
-                // Pressure might be (M+1)x(N+1), we take top-left M x N
-                // assuming p(i,j) aligns with cell center i,j
                 pThermal(i, j) = p(i, src_j);
+                pGradThermal(i, j) = pGradMag(i, src_j);
             }
         }
         saveMatrix(uThermal, "u_thermal");
         saveMatrix(vThermal, "v_thermal");
         saveMatrix(pThermal, "pressure_thermal");
+        saveMatrix(pGradThermal, "p_gradient");
     }
 
     // ---------------------------------------------------------
-    // 4. EXPORT FLUID VTK (FULL DOMAIN)
+    // 5. EXPORT FLUID VTK (FULL DOMAIN)
     // ---------------------------------------------------------
     std::string vtkFile = "ExportFiles/fluid_results.vtk";
     std::ofstream vtk(vtkFile);
@@ -182,6 +217,23 @@ void SIMPLE::saveAll()
         for (int i = 0; i < M; ++i) {
             for (int j = 0; j < N; ++j) {
                 vtk << alpha(i, j) << "\n";
+            }
+        }
+        
+        // Pressure Gradient Magnitude
+        vtk << "SCALARS PressureGradient double 1\n";
+        vtk << "LOOKUP_TABLE default\n";
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N; ++j) {
+                vtk << pGradMag(i, j) << "\n";
+            }
+        }
+        
+        // Pressure Gradient Vector
+        vtk << "VECTORS pressure_gradient double\n";
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N; ++j) {
+                vtk << pGradX(i, j) << " " << pGradY(i, j) << " 0.0\n";
             }
         }
         

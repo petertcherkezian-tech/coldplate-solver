@@ -203,8 +203,12 @@ double SIMPLE::calculateStep(int& pressureIterations)
                 updateStats(dtLocal, uDtMin, uDtMax, uDtSum, uDtCount);
             }
             double transCoeffLocal = rho * vol / dtLocal;
+            
+            // Brinkman penalization: alpha * vol adds drag in porous/solid regions
+            double alphaLocal = alphaAtU(*this, i, j);
+            double brinkmanDrag = alphaLocal * vol;
 
-            double aP0 = sumA + (Fe - Fw + Fn - Fs) + transCoeffLocal + sinkDiag;
+            double aP0 = sumA + (Fe - Fw + Fn - Fs) + transCoeffLocal + sinkDiag + brinkmanDrag;
             aP0 = std::max(aP0, 1e-10);
 
             // d-coefficient for velocity correction: u' = d * (p'_P - p'_E)
@@ -284,8 +288,12 @@ double SIMPLE::calculateStep(int& pressureIterations)
                 updateStats(dtLocal, vDtMin, vDtMax, vDtSum, vDtCount);
             }
             double transCoeffLocal = rho * vol / dtLocal;
+            
+            // Brinkman penalization: alpha * vol adds drag in porous/solid regions
+            double alphaLocal = alphaAtV(*this, i, j);
+            double brinkmanDrag = alphaLocal * vol;
 
-            double aP0 = sumA + (Fe - Fw + Fn - Fs) + transCoeffLocal + sinkDiag;
+            double aP0 = sumA + (Fe - Fw + Fn - Fs) + transCoeffLocal + sinkDiag + brinkmanDrag;
             aP0 = std::max(aP0, 1e-10);
 
             // d-coefficient for velocity correction: v' = d * (p'_P - p'_N)
