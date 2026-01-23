@@ -242,13 +242,12 @@ bool SIMPLE::solvePressureSystem(int& pressureIterations, double& localResidMass
 
                     triplets.push_back(Eigen::Triplet<double>(linIdx, linIdx, aP_p));
 
+                    // Add off-diagonal for east neighbor (skip if j = N-1, outlet ghost has p' = 0)
                     if (j < N - 1 && fluidP(*this, i, j + 1) && checkBoundaries(i, j + 1) != 1.0) {
                         int neighborLinIdx = mapping.linearIndex[i][j + 1];
                         if (neighborLinIdx >= 0 && neighborLinIdx < nFluidCells) {
                             triplets.push_back(Eigen::Triplet<double>(linIdx, neighborLinIdx, -aE_p));
                         }
-                    } else if (j + 1 == N - 1 && aE_p > 0.0) {
-                        // outlet boundary contribution already zero
                     }
 
                     if (j > 1 && fluidP(*this, i, j - 1) && checkBoundaries(i, j - 1) != 1.0) {

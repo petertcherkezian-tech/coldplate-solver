@@ -207,9 +207,10 @@ double SIMPLE::calculateStep(int& pressureIterations)
             double aP0 = sumA + (Fe - Fw + Fn - Fs) + transCoeffLocal + sinkDiag;
             aP0 = std::max(aP0, 1e-10);
 
-            // SIMPLE: dDenom = aP0 + sumA (neglects neighbor contributions)
-            // SIMPLEC: dDenom = aP0 - sumA (accounts for neighbor contributions consistently)
-            double dDenom = useSIMPLEC ? std::max(aP0 - sumA, 1e-12) : std::max(aP0 + sumA, 1e-12);
+            // d-coefficient for velocity correction: u' = d * (p'_P - p'_E)
+            // SIMPLE:  d = A / a_P           (a_P already includes neighbor coefficients)
+            // SIMPLEC: d = A / (a_P - Σa_nb) (more consistent pressure-velocity coupling)
+            double dDenom = useSIMPLEC ? std::max(aP0 - sumA, 1e-12) : std::max(aP0, 1e-12);
             dE(i, j) = hy / dDenom;
 
             double Sp = (p(i, j) - p(i, j + 1)) * hy;
@@ -287,9 +288,10 @@ double SIMPLE::calculateStep(int& pressureIterations)
             double aP0 = sumA + (Fe - Fw + Fn - Fs) + transCoeffLocal + sinkDiag;
             aP0 = std::max(aP0, 1e-10);
 
-            // SIMPLE: dDenom = aP0 + sumA (neglects neighbor contributions)
-            // SIMPLEC: dDenom = aP0 - sumA (accounts for neighbor contributions consistently)
-            double dDenom = useSIMPLEC ? std::max(aP0 - sumA, 1e-12) : std::max(aP0 + sumA, 1e-12);
+            // d-coefficient for velocity correction: v' = d * (p'_P - p'_N)
+            // SIMPLE:  d = A / a_P           (a_P already includes neighbor coefficients)
+            // SIMPLEC: d = A / (a_P - Σa_nb) (more consistent pressure-velocity coupling)
+            double dDenom = useSIMPLEC ? std::max(aP0 - sumA, 1e-12) : std::max(aP0, 1e-12);
             dN(i, j) = hx / dDenom;
 
             double Sp = (p(i, j) - p(i + 1, j)) * hx;
